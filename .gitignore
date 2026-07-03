@@ -1,11 +1,13 @@
 ﻿# Local credentials/config
 .env
 config.ini
+credentials.xml
 http-login.ps1
 
 # Logs and runtime state
 *.log
 *.lock
+state.json
 last_attempt.txt
 keepalive.lock
 

@@ -1,142 +1,173 @@
 # Campus Net Keepalive
 
-Windows 校园网自动续连小工具。
+Windows campus network keepalive tool for Dr.COM / ePortal style portals.
 
-这个项目适合下面这种校园网：
+This project is designed as a green script tool:
 
-- 掉认证后，打开一个固定认证页即可进入登录页面。
-- 浏览器已经记住账号密码。
-- 页面上只需要点击一次 `Sign in` / `登录` 按钮即可恢复网络。
-- 你希望电脑长期在线，方便 SSH、Tailscale、VS Code Remote 等远程访问。
+- no browser pop-up
+- no foreground click automation
+- no Windows service
+- no registry changes
+- no global installation
+- all local state stays in this folder
+- credentials are encrypted with Windows DPAPI for the current Windows user
 
-## 先说结论
+## How It Works
 
-原来的 `AutoHotkey + Edge + 按钮截图` 方案能用，但有两个天然问题：
+The script does not blindly log in every minute.
 
-1. **会有无网络真空期**  
-   如果任务计划每 6 小时跑一次，而校园网第 3 小时掉线，那中间最多会断 3 小时。
+Each run follows this conservative flow:
 
-2. **会打断当前进程**  
-   AHK 的 `ImageSearch + Click` 属于前台 UI 自动化。它必须看到按钮，通常也必须激活窗口，所以无法做到真正后台无感。
+1. Query `online_list` through the portal IP.
+2. If already online, exit quietly unless a low-frequency heartbeat log is due.
+3. If offline once, record the state and exit.
+4. If offline twice in a row, send one login request.
+5. Re-check `online_list`.
+6. If login failed, enter cooldown and stop retrying for a while.
 
-本项目因此提供两种模式：
+This avoids the common "system busy" problem caused by repeated login attempts.
 
-- **截图点击模式**：最容易用。把按钮截图放到目录里即可运行，但可能短暂弹出浏览器窗口。
-- **HTTP 后台模式**：最推荐。抓到校园网登录接口后，脚本直接发请求认证，不打开浏览器，不打断操作。
-
-## 快速使用：截图点击模式
-
-### 1. 安装 AutoHotkey v2
-
-下载并安装 AutoHotkey v2：
-
-<https://www.autohotkey.com/>
-
-### 2. 下载本项目
-
-把整个文件夹放到一个固定位置，例如：
+## Files
 
 ```text
-E:\campus-net-keepalive\
+campus_keepalive.ps1   Main background keepalive script
+run_hidden.vbs         Hidden launcher used by Task Scheduler
+setup_gui.ps1          Visual setup wizard for normal users
+setup.ps1              Creates local config.ini and encrypted credentials.xml
+install_task.ps1       Installs the Windows scheduled task
+uninstall_task.ps1     Removes the Windows scheduled task
+config.example.ini     Example configuration
+campus_keepalive.ahk   Legacy screenshot-click fallback
 ```
 
-### 3. 修改配置
-
-复制一份配置文件：
+Local files created at runtime:
 
 ```text
-config.example.ini -> config.ini
+config.ini             Local portal/network settings, ignored by Git
+credentials.xml        DPAPI-encrypted credential, ignored by Git
+keepalive.log          Small rotating log, ignored by Git
+keepalive.*.log        Old rotated logs, ignored by Git and auto-cleaned
+state.json             Cooldown/offline state, ignored by Git
 ```
 
-打开 `config.ini`，至少修改：
+## Visual Setup
 
-```ini
-[auth]
-url=https://你的校园网认证地址
+For normal users, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup_gui.ps1
 ```
 
-### 4. 放置按钮截图
+The setup window lets you configure:
 
-打开校园网认证页，只截取登录按钮本体或按钮附近少量区域，保存为：
+- verification website
+- portal server IP and port
+- operator suffix
+- account and password
+- self-check interval
+- offline confirmation count
+- failure cooldown
+- log heartbeat and cleanup policy
+
+Click `Save and configure` to write local config, save the encrypted credential, and install or update the scheduled task.
+
+## Manual Setup
+
+Open PowerShell in this folder:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+For NJUPT China Mobile style portal, the defaults are usually:
 
 ```text
-signin_button.png
+Portal server IP: 10.10.244.11
+Portal HTTP port: 801
+Account suffix: @cmcc
+Portal account prefix: ,0,
 ```
 
-并放在项目根目录，也就是和 `campus_keepalive.ahk` 同级。
-
-注意：
-
-- 不要截太多空白背景。
-- 保持浏览器缩放比例一致，建议 100%。
-- 如果学校改版，重新截图即可。
-
-### 5. 手动测试
-
-双击运行：
+If auto network detection picks a VPN/TUN adapter, set:
 
 ```text
-campus_keepalive.ahk
+Network interface alias: WLAN
 ```
 
-它会先探测网络。如果网络正常，会直接退出；如果网络异常，会打开认证页，寻找按钮截图并点击。
+or fill in the WLAN IPv4 and MAC manually.
 
-## 减少“无网络真空期”
+## Manual Test
 
-不要再设置“每 6 小时运行一次”。建议改成：
+Run once:
 
-- 登录时运行一次。
-- 之后每 1 分钟运行一次。
-- 脚本内部会先探测网络，网络正常时不会打开浏览器。
-- 加了冷却时间，避免认证失败时疯狂弹窗。
+```powershell
+powershell -ExecutionPolicy Bypass -File .\campus_keepalive.ps1
+```
 
-这样断网后通常 1 分钟内会尝试恢复。
+Then inspect:
 
-可用项目里的安装脚本自动创建任务：
+```powershell
+Get-Content .\keepalive.log -Tail 20
+```
+
+If you are already online, the script should not send a login request. It logs `Online` only when the state changes or when the heartbeat interval is reached.
+
+## Log Cleanup
+
+Default logging policy:
+
+```text
+online_heartbeat_minutes=360
+max_log_bytes=65536
+retention_days=3
+max_archives=3
+```
+
+This means normal online checks do not create one log line per minute. The current log rotates around 64 KB, rotated logs older than 3 days are deleted, and at most 3 rotated logs are kept.
+
+## Install Background Task
+
+After manual test:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_task.ps1
 ```
 
-## 真正后台无弹窗：HTTP 模式
+The task runs once every minute while Windows Task Scheduler is active for the current user.
 
-如果想完全不弹网页、不抢焦点，不能依赖按钮截图，应该直接调用校园网认证接口。
+If `setup_gui.ps1` sets another interval, `install_task.ps1` uses that value from `config.ini`.
 
-大致步骤：
+Task Scheduler starts `run_hidden.vbs`, and the VBS launcher starts PowerShell hidden. The script exits quickly after each check. It is not a resident background process.
 
-1. 打开浏览器开发者工具。
-2. 进入 `Network` 面板。
-3. 手动点击一次 `Sign in`。
-4. 找到点击登录时产生的请求，通常是 `POST` 或 `GET`。
-5. 复制请求 URL、请求方法、请求体、必要 Header。
-6. 填到 `http-login.example.ps1` 的配置区，另存为 `http-login.ps1`。
-7. 任务计划中运行 `http-login.ps1`，而不是 AHK 脚本。
+## Uninstall
 
-HTTP 模式才是最稳的开源方向，因为它不依赖屏幕分辨率、浏览器缩放、按钮样式，也不会打断正在做的事情。
-
-## 文件说明
-
-```text
-campus_keepalive.ahk      截图点击模式主脚本
-config.example.ini        AHK 配置模板
-install_task.ps1          创建 Windows 任务计划
-http-login.example.ps1    HTTP 后台认证模板
-signin_button.png         用户自己放置的登录按钮截图
+```powershell
+powershell -ExecutionPolicy Bypass -File .\uninstall_task.ps1
 ```
 
-## 对原教程的优化点
+This removes only the scheduled task. Local files are kept in the folder so you can inspect logs or reinstall later.
 
-- 从“每 6 小时盲点一次”改成“高频探测，断网才认证”。
-- 增加多 URL 探测，减少误判。
-- 增加冷却时间，避免认证页异常时重复弹窗。
-- 增加日志，方便排查失败原因。
-- 避免重复实例。
-- 将认证地址、按钮图片、等待时间等参数放到配置文件。
-- 明确区分“截图点击模式”和“HTTP 后台模式”。
+To fully remove local state, delete:
 
-## 局限
+```text
+config.ini
+credentials.xml
+keepalive.log
+keepalive.*.log
+state.json
+```
 
-截图点击模式无法做到完全后台。只要需要看图找按钮并点击，就可能短暂弹出窗口、抢焦点或受缩放影响。
+## Proxy And VPN Notes
 
-如果你的目标是“完全不打断当前工作”，请使用 HTTP 模式。
+The script uses the portal IP directly and passes `-Proxy $null` to PowerShell web requests.
 
+This avoids normal HTTP browser proxy settings. If your VPN/TUN client captures all traffic, add a direct route for the portal IP or configure the VPN rule engine to direct-connect `10.10.244.11`.
+
+## Safety Rules
+
+- Do not commit `config.ini`.
+- Do not commit `credentials.xml`.
+- Do not lower `cooldown_seconds` aggressively.
+- Do not replace `online_list` with `chkstatus` unless your portal proves that `chkstatus` is reliable.
+
+For this portal, `online_list` is the reliable source of truth.
