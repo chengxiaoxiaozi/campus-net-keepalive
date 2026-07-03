@@ -1,0 +1,24 @@
+﻿# Local credentials/config
+.env
+config.ini
+http-login.ps1
+
+# Logs and runtime state
+*.log
+*.lock
+last_attempt.txt
+keepalive.lock
+
+# Keys and tokens
+*.pem
+*.key
+id_rsa
+id_ed25519
+*token*
+*secret*
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
